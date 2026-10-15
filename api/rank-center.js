@@ -2,7 +2,6 @@ const express = require('express');
 const cors = require('cors');
 const app = express();
 
-// Enable CORS and JSON parsing so web browsers and Roblox Studio can connect smoothly
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 
@@ -10,7 +9,6 @@ app.post('/api/rank-center', async (req, res) => {
     try {
         const { userId, groupId, targetRankId, gamePassId, purchaseId, universeId, webhookUrl } = req.body;
 
-        // Basic payload validation
         if (!userId || !groupId || !targetRankId) {
             return res.status(400).json({ 
                 success: false, 
@@ -29,15 +27,37 @@ app.post('/api/rank-center', async (req, res) => {
 
         console.log(`[RankCenter] Processing rank change for User ${userId} in Group ${groupId} to Rank ID ${targetRankId}`);
 
-        // TODO: Insert your Roblox Open Cloud API call here to update the user's role via the Groups API
-        // Example endpoint structure: https://groups.roblox.com/v1/groups/{groupId}/users/{userId}
+        // --- ROBLOX OPEN CLOUD API CALL ---
+        // Roblox Open Cloud uses the Groups v2 / Cloud APIs to update member roles.
+        // Endpoint structure for updating a user's role in a group:
+        const robloxResponse = await fetch(`https://apis.roblox.com/cloud/v2/groups/${groupId}/memberships/${userId}`, {
+            method: 'PATCH',
+            headers: {
+                'x-api-key': apiKey,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                // Open Cloud expects the role resource path or ID depending on the exact schema version
+                role: `groups/${groupId}/roles/${targetRankId}`
+            })
+        });
 
-        // Return a successful response
+        if (!robloxResponse.ok) {
+            const errorText = await robloxResponse.text();
+            console.error("Roblox Open Cloud Error:", errorText);
+            return res.status(502).json({
+                success: false,
+                message: "Failed to update rank via Roblox API.",
+                details: errorText
+            });
+        }
+
+        const robloxData = await robloxResponse.json();
+
         return res.status(200).json({
             success: true,
-            message: "Successfully processed rank update.",
-            userId: userId,
-            targetRankId: targetRankId
+            message: "Successfully updated rank in Roblox group!",
+            data: robloxData
         });
 
     } catch (error) {
