@@ -1,13 +1,11 @@
 const express = require('express');
-const crypto = require('crypto');
 const app = express();
 
 app.use(express.json());
 
 const ROBLOX_API_KEY = process.env.ROBLOX_API_KEY;
-const BACKEND_SECRET = process.env.BACKEND_SECRET; 
 
-// In-memory fallback map (Recommendation: Swap this out for Upstash Redis in production)
+// In-memory fallback map (Recommendation: Swap for Upstash Redis or Supabase in production)
 const processedTransactions = new Set();
 
 // Helper: Exponential Backoff Fetch for Roblox Open Cloud API
@@ -35,16 +33,13 @@ app.post('/api/claim-rank', async (req, res) => {
             return res.status(400).json({ success: false, message: 'Missing required configuration or transaction fields.' });
         }
 
-        // 2. HMAC SIGNATURE VERIFICATION
-        if (BACKEND_SECRET) {
-            const clientSignature = req.headers['x-signature'];
-            const computedSignature = crypto
-                .createHmac('sha256', BACKEND_SECRET)
-                .update(JSON.stringify(req.body))
-                .digest('hex');
+        // 2. IDEMPOTENCY CHECK (Prevent duplicate claims)
+        if (processedTransactions.has(purchaseId)) {
+            return res.status(400).json({ success: false, message: 'This purchase receipt has already been claimed.' });
+        }
 
-            if (!clientSignature || clientSignature !== computedSignature) {
-                console.warn(`[SECURITY] Unauthorized signature attempt from User ${userId}`); return res.status(401).json({ success: false, message: 'Unauthorized request signature.' }); } }  // 3. IDEMPOTENCY CHECK (Prevent duplicate claims) if (processedTransactions.has(purchaseId)) { return res.status(400).json({ success: false, message: 'This purchase receipt has already been claimed.' }); }  // 4. SERVER-SIDE GAMEPASS OWNERSHIP VERIFICATION const ownershipUrl = `https://apis.roblox.com/cloud/v2/universes/${universeId}/users/${userId}/game-passes/${gamePassId}`;
+        // 3. SERVER-SIDE GAMEPASS OWNERSHIP VERIFICATION
+        const ownershipUrl = `https://apis.roblox.com/cloud/v2/universes/${universeId}/users/${userId}/game-passes/${gamePassId}`;
         const ownershipResponse = await fetchWithRetry(ownershipUrl, {
             method: 'GET',
             headers: { 'x-api-key': ROBLOX_API_KEY }
@@ -64,7 +59,7 @@ app.post('/api/claim-rank', async (req, res) => {
 
         console.log(`[RANK CENTER] Verified ownership for User ${userId}. Promoting to Rank ${targetRankId} in Group${groupId}...`);
 
-        // 5. EXECUTE GROUP RANK UPDATE WITH RETRY LOGIC
+        // 4. EXECUTE GROUP RANK UPDATE WITH RETRY LOGIC
         const openCloudUrl = `https://apis.roblox.com/cloud/v2/groups/${groupId}/memberships/${userId}`;
         const rankResponse = await fetchWithRetry(openCloudUrl, {
             method: 'PATCH',
@@ -94,7 +89,7 @@ app.post('/api/claim-rank', async (req, res) => {
             return res.status(500).json({ success: false, error: errorText });
         }
 
-        // 6. RICH DISCORD AUDIT EMBED LOG
+        // 5. RICH DISCORD AUDIT EMBED LOG
         if (webhookUrl && webhookUrl.trim() !== "") {
             try {
                 const discordPayload = {
