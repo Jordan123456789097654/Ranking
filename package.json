@@ -1,0 +1,9 @@
+{
+  "name": "roblox-application-backend",
+  "version": "1.0.0",
+  "description": "Roblox auto-ranking backend for Vercel",
+  "main": "api/index.js",
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
