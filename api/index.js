@@ -7,11 +7,42 @@ const ROBLOX_API_KEY = process.env.ROBLOX_API_KEY; // Managed via Vercel Environ
 
 app.post('/api/submit-application', async (req, res) => {
     try {
-        const { userId, groupId, targetRankId, passed } = req.body;
+        const { userId, groupId, targetRankId, passed, applicationName, score, maxScore, webhookUrl } = req.body;
 
         // Basic payload validation
         if (!userId || !groupId || !targetRankId || typeof passed !== 'boolean') {
             return res.status(400).json({ success: false, message: 'Invalid payload structure or missing configuration fields.' });
+        }
+
+        // 1. DISCORD WEBHOOK NOTIFICATION (Sent if webhookUrl is provided from config)
+        if (webhookUrl && webhookUrl !== "") {
+            try {
+                const embedColor = passed ? 3066993 : 15158332; // Green for pass, Red for fail
+                const statusText = passed ? "PASSED & RANKED UP" : "FAILED / COOLDOWN";
+
+                const discordPayload = {
+                    embeds: [{
+                        title: `📋 Application Submission: ${applicationName || "Standard App"}`,
+                        color: embedColor,
+                        fields: [
+                            { name: "User ID", value: `\`${userId}\``, inline: true },
+                            { name: "Status", value: `**${statusText}**`, inline: true },
+                            { name: "Score", value: `${score} / ${maxScore}`, inline: true }
+                        ],
+                        timestamp: new Date().toISOString()
+                    }]
+                };
+
+                // Send non-blocking request to Discord webhook
+                fetch(webhookUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(discordPayload)
+                }).catch(err => console.error("Discord Webhook dispatch failed:", err));
+
+            } catch (webhookErr) {
+                console.error("Error formatting Discord webhook:", webhookErr);
+            }
         }
 
         // If the user failed the application, do not rank them up
@@ -21,7 +52,7 @@ app.post('/api/submit-application', async (req, res) => {
 
         console.log(`Promoting user ${userId} to rank role ID ${targetRankId} in group ${groupId}...`);
 
-        // Official Roblox Open Cloud v2 Endpoint for group membership role updates
+        // 2. OFFICIAL ROBLOX OPEN CLOUD API RANKING
         const openCloudUrl = `https://apis.roblox.com/cloud/v2/groups/${groupId}/memberships/${userId}`;
         
         const robloxResponse = await fetch(openCloudUrl, {
