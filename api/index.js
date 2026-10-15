@@ -3,7 +3,24 @@ const app = express();
 
 app.use(express.json());
 
-const ROBLOX_API_KEY = process.env.ROBLOX_API_KEY; // Managed via Vercel Environment Variables
+const ROBLOX_API_KEY = process.env.ROBLOX_API_KEY; // Stored in Vercel Environment Variables
+
+// Helper: Exponential Backoff Fetch for Roblox Open Cloud API
+async function fetchWithRetry(url, options, retries = 3, backoff = 1000) {
+    for (let i = 0; i < retries; i++) {
+        try {
+            const response = await fetch(url, options);
+            // Retry on temporary server errors (5xx) or rate limits (429)
+            if (response.ok || (response.status !== 429 && response.status < 500)) {
+                return response;
+            }
+        } catch (err) {
+            if (i === retries - 1) throw err;
+        }
+        await new Promise(resolve => setTimeout(resolve, backoff * Math.pow(2, i)));
+    }
+    return fetch(url, options);
+}
 
 app.post('/api/submit-application', async (req, res) => {
     try {
@@ -14,48 +31,60 @@ app.post('/api/submit-application', async (req, res) => {
             return res.status(400).json({ success: false, message: 'Invalid payload structure or missing configuration fields.' });
         }
 
-        // 1. DISCORD WEBHOOK NOTIFICATION (Sent if webhookUrl is provided from config)
-        if (webhookUrl && webhookUrl !== "") {
+        const appName = applicationName || "Standard Application";
+        const userScore = score !== undefined ? score : 0;
+        const totalScore = maxScore !== undefined ? maxScore : 0;
+        const scorePercentage = totalScore > 0 ? Math.round((userScore / totalScore) * 100) : 0;
+
+        // 1. ADVANCED DISCORD EMBED WEBHOOK LOGGING
+        if (webhookUrl && webhookUrl.trim() !== "") {
             try {
-                const embedColor = passed ? 3066993 : 15158332; // Green for pass, Red for fail
-                const statusText = passed ? "PASSED & RANKED UP" : "FAILED / COOLDOWN";
+                const embedColor = passed ? 0x2ECC71 : 0xE74C3C; // Emerald Green for Pass, Alizarin Red for Fail
+                const statusTitle = passed ? "✅ APPLICATION PASSED & RANKED" : "❌ APPLICATION FAILED";
 
                 const discordPayload = {
                     embeds: [{
-                        title: `📋 Application Submission: ${applicationName || "Standard App"}`,
+                        title: statusTitle,
+                        description: `A user has completed the **${appName}**!`,
                         color: embedColor,
+                        thumbnail: {
+                            url: `https://www.roblox.com/headshot-thumbnail/image?userId=${userId}&width=150&height=150&format=png`
+                        },
                         fields: [
-                            { name: "User ID", value: `\`${userId}\``, inline: true },
-                            { name: "Status", value: `**${statusText}**`, inline: true },
-                            { name: "Score", value: `${score} / ${maxScore}`, inline: true }
+                            { name: "👤 Candidate User ID", value: `[${userId}](https://www.roblox.com/users/${userId}/profile)`, inline: true },
+                            { name: "📊 Final Score", value: `**${userScore}/${totalScore}** (${scorePercentage}%)`, inline: true },
+                            { name: "🛡️ Target Group / Rank", value: `Group: \`${groupId}\`\nRank ID: \`${targetRankId}\``, inline: false }
                         ],
+                        footer: {
+                            text: "Roblox Automated Application System • Vercel Relay"
+                        },
                         timestamp: new Date().toISOString()
                     }]
                 };
 
-                // Send non-blocking request to Discord webhook
+                // Non-blocking asynchronous dispatch
                 fetch(webhookUrl, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(discordPayload)
-                }).catch(err => console.error("Discord Webhook dispatch failed:", err));
+                }).catch(err => console.error("Discord Webhook dispatch warning:", err));
 
             } catch (webhookErr) {
-                console.error("Error formatting Discord webhook:", webhookErr);
+                console.error("Error generating Discord webhook payload:", webhookErr);
             }
         }
 
-        // If the user failed the application, do not rank them up
+        // If applicant failed, stop here (no Open Cloud ranking action needed)
         if (!passed) {
             return res.json({ success: true, message: 'Application graded as failed. No ranking action taken.' });
         }
 
-        console.log(`Promoting user ${userId} to rank role ID ${targetRankId} in group ${groupId}...`);
+        console.log(`[PASS] Executing rank promotion for User ${userId} to Rank ${targetRankId} in Group${groupId}...`);
 
-        // 2. OFFICIAL ROBLOX OPEN CLOUD API RANKING
+        // 2. OFFICIAL ROBLOX OPEN CLOUD API RANKING WITH RETRY LOGIC
         const openCloudUrl = `https://apis.roblox.com/cloud/v2/groups/${groupId}/memberships/${userId}`;
         
-        const robloxResponse = await fetch(openCloudUrl, {
+        const robloxResponse = await fetchWithRetry(openCloudUrl, {
             method: 'PATCH',
             headers: {
                 'x-api-key': ROBLOX_API_KEY,
@@ -69,6 +98,18 @@ app.post('/api/submit-application', async (req, res) => {
         if (!robloxResponse.ok) {
             const errorText = await robloxResponse.text();
             console.error('Roblox Open Cloud API Error:', errorText);
+
+            // Optional: Dispatch an alert to Discord if Open Cloud ranking fails
+            if (webhookUrl && webhookUrl.trim() !== "") {
+                fetch(webhookUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        content: `⚠️ **RANKING ERROR**: User \`${userId}\` passed the application, but Open Cloud API failed to update their rank. Details: \`${errorText}\``
+                    })
+                }).catch(() => {});
+            }
+
             return res.status(500).json({ success: false, error: errorText });
         }
 
@@ -76,10 +117,9 @@ app.post('/api/submit-application', async (req, res) => {
         return res.json({ success: true, data: responseData });
 
     } catch (err) {
-        console.error('Server error:', err);
+        console.error('Critical server error:', err);
         return res.status(500).json({ success: false, error: err.message });
     }
 });
 
-// Required for Vercel serverless execution
 module.exports = app;
