@@ -1,6 +1,7 @@
 {
   "version": 2,
   "rewrites": [
-    { "source": "/submit-application", "destination": "/api/index" }
+    { "source": "/submit-application", "destination": "/api/index" },
+    { "source": "/health", "destination": "/api/index" }
   ]
 }
